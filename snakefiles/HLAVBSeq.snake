@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+# coding=utf-8
+
+__author__ = "Rohan Abraham"
+__copyright__ = "Copyright (C) 2023, " + __author__
+__email__ = "rabraham@bcgsc.ca"
+__license__ = "GPLv3"
+
+include: "common.snake"
+
+rule extract_contigs:
+	"""
+	Extract chr6 alt contigs, HLA contigs, chr6:28510120:33522800
+	"""
+	input:
+		unpack(samples_table_cram),
+		ref_fasta = config["alignment"]["fasta"]
+	output:
+		regions = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.regionsHG19.txt",
+								)),
+		reads = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.readsHG19.txt",
+								)),
+		unmapped = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.unmapped.txt",
+								)),
+		hla_with_unmapped = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped.txt",
+								)),
+	log:
+		samtools_log = os.path.join("log",
+								"{sample}",
+								"{sample}_samtools.log",
+								),
+	params:
+		samtools = config["software"]["samtools1"],
+		outs_dir = config["outs_dir"],
+	resources:
+		mem_mb = config["samtools"]["mem"],
+		time_limit = config["samtools"]["time_limit"],
+	threads:
+		config["samtools"]["threads"],
+	shell:
+		" ".join(["{params.samtools}",
+					"view",
+					"-H -T {input.ref_fasta}",
+					"{params.outs_dir}/data/{wildcards.sample}/dragmap-v1.3.0/{wildcards.sample}.md.recal.cram",
+					"|",
+					"awk '{{print $2}}'",
+					"|",
+					"grep -E 'SN:(chr6|HLA)'",
+					"|",
+					"sed s'/^SN://g'",
+					"|",
+					"sed s'/^chr6$/chr6:28510120-33522800/'",
+					"1> {output.regions} 2> {log.samtools_log}",
+					"&&",
+					"{params.samtools}",
+					"view",
+					"-@ {threads} -T",
+					"{input.ref_fasta}",
+					"{params.outs_dir}/data/{wildcards.sample}/dragmap-v1.3.0/{wildcards.sample}.md.recal.cram",
+					"$(<{output.regions})",
+					"|",
+					"awk '{{print $1}}'",
+					"|",
+					"sort",
+					"|",
+					"uniq",
+					"1> {output.reads} 2> {log.samtools_log}",
+					"&&",
+					"{params.samtools}",
+					"view",
+					"-@ {threads}",
+					"-f 12",
+					"-T {input.ref_fasta}",
+					"{params.outs_dir}/data/{wildcards.sample}/dragmap-v1.3.0/{wildcards.sample}.md.recal.cram",
+					"|",
+					"cut -f1",
+					"1> {output.unmapped} 2> {log.samtools_log}",
+					"&&",
+					"cat {output.reads} {output.unmapped} > {output.hla_with_unmapped}"
+				])
+
+rule filter_sam_reads:
+	"""
+	Use FilterSamReads to get mate pairs from hg38 cram
+	"""
+	input:
+		unpack(samples_table_cram),
+		hla_with_unmapped = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped.txt",
+								),
+		ref_fasta = config["alignment"]["fasta"]
+	output:
+		hla_bam = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads.bam",
+								)),
+	log:
+		picard_log = os.path.join("log",
+								"{sample}",
+								"{sample}_picard.log",
+								),
+	params:
+		java = config["software"]["java2"],
+		picard = config["software"]["picard"],
+		outs_dir = config["outs_dir"],
+	#resources:
+	#	mem_mb = config["picard"]["mem"],
+	shell:
+		" ".join(["{params.java}",
+				"-jar -Xmx40g {params.picard}",
+				"FilterSamReads",
+				"--FILTER includeReadList",
+				"--READ_LIST_FILE {input.hla_with_unmapped}",
+				"-I {params.outs_dir}/data/{wildcards.sample}/dragmap-v1.3.0/{wildcards.sample}.md.recal.cram",
+				"-O {output.hla_bam}",	
+				"--REFERENCE_SEQUENCE {input.ref_fasta}",
+				"2> {log.picard_log}",
+				])
+
+rule convert_to_fastq:
+	"""
+	Convert to fastq
+	"""
+	input:
+		hla_bam = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads.bam",
+								),
+		ref_fasta = config["alignment"]["fasta"]
+	output:
+		fastq_R1 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads_r1.fastq.gz",
+								)),
+		fastq_R2 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads_r2.fastq.gz",
+								)),
+	log:
+		picard_log = os.path.join("log",
+								"{sample}",
+								"{sample}_picard.log",
+								),
+	params:
+		java = config["software"]["java2"],
+		picard = config["software"]["picard"],
+	resources:
+		mem_mb = config["picard"]["mem"],
+	shell:
+		" ".join(["{params.java}",
+				"-jar {params.picard}",
+				"SamToFastq",
+				"-I {input.hla_bam}",
+				"-F {output.fastq_R1}",	
+				"-F2 {output.fastq_R2}",
+				])
+
+rule realign_fastq:
+	"""
+	Realign fastqs to hg19
+	"""
+	input:
+		fastq_R1 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads_r1.fastq.gz",
+								),
+		fastq_R2 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hla_with_unmapped_reads_r2.fastq.gz",
+								),
+		ref_fasta = config["alignment"]["fasta_g1k_v37_487"]
+	output:
+		bam_hg19 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hg19.bam",
+								)),
+	log:
+		bwa_log = os.path.join("log",
+								"{sample}",
+								"{sample}_bwa.log",
+								),
+	params:
+		bwa = config["software"]["bwa"],
+		samtools = config["software"]["samtools1"]
+	resources:
+		mem_mb = config["bwa"]["mem"],
+		time_limit = config["bwa"]["time_limit"],
+	threads:
+		config["bwa"]["threads"],
+	shell:
+		" ".join(["{params.bwa}",
+				"mem -aPM",
+				"-t {threads}",
+				"{input.ref_fasta}",
+				"{input.fastq_R1}",	
+				"{input.fastq_R2}",
+				"|",
+				"{params.samtools}",
+				"sort",
+				"-@ {threads}",
+				"-o {output.bam_hg19}",
+				"2> {log.bwa_log}",
+				"&&",
+				"{params.samtools}",
+				"index {output.bam_hg19}",
+				])
+
+rule generate_hla_fastq:
+	"""
+	Generate fastq files for HLA
+	"""
+	input:
+		bam_hg19 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hg19.bam",
+								),
+		ref_fasta = config["alignment"]["fasta_g1k_v37_487"]
+	output:
+		fastq_R1 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.R1.fastq.gz",
+								)),
+		fastq_R2 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.R2.fastq.gz",
+								)),
+	log:
+		samtools_log = os.path.join("log",
+								"{sample}",
+								"{sample}_samtools.log",
+								),
+	params:
+		samtools = config["software"]["samtools1"]
+	resources:
+		mem_mb = config["samtools"]["mem"],
+		time_limit = config["samtools"]["time_limit"],
+	threads:
+		config["samtools"]["threads"],
+	shell:
+		" ".join(["{params.samtools}",
+				"view -u -h",
+				"-T {input.ref_fasta}",
+				"-@ {threads}",
+				"{input.bam_hg19}",
+				"|",
+				"{params.samtools}",
+				"sort -n",
+				"-@ {threads}",
+				"|",
+				"{params.samtools}",
+				"fastq -",
+				"-@ {threads}",
+				"-1 {output.fastq_R1}",
+				"-2 {output.fastq_R2}",
+				"-0 /dev/null",
+				"-s /dev/null -n",
+				"2> {log.samtools_log}",
+				])		
+
+rule extract_read_names:
+	"""
+	Extract a list of read name that were aligned to HLA loci (HLA-A, B, C, DM, DO, DP, DQ, DR, E, F, G, H, J, K, L, P, V, MIC, and TAP)
+	"""
+	input:
+		bam_hg19 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.hg19.bam",
+								),
+	output:
+		readnames = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.readnames.list",
+								)),
+	log:
+		samtools_log = os.path.join("log",
+								"{sample}",
+								"{sample}_samtools.log",
+								),
+	params:
+		samtools = config["software"]["samtools1"],
+		outs_dir = config["outs_dir"],
+	resources:
+		mem_mb = config["samtools"]["mem"],
+		time_limit = config["samtools"]["time_limit"],
+	threads:
+		config["samtools"]["threads"],
+	shell:
+		" ".join(["{params.samtools}",
+				"view",
+				"-@ {threads}",
+				"{input.bam_hg19}",
+				"chr6:28500120-33490577",
+				"|",
+				"cut -f1",
+				"|",
+				"sort",
+				"|",
+				"uniq",
+				"1> {output.readnames}",
+				"2> {log.samtools_log}",
+				])
+
+rule extract_read_pairs:
+	"""
+	Build read name index and search read pairs and their sequences on HLA loci
+	"""
+	input:
+		fastq_R1 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.R1.fastq.gz",
+								),
+		fastq_R2 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.R2.fastq.gz",
+								),
+		readnames = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.readnames.list",
+								),
+	output:
+		fastq_R1 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.Extracted_R1.fastq.gz",
+								)),
+		fastq_R2 = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.Extracted_R2.fastq.gz",
+								)),
+	params:
+		seqtk = config["software"]["seqtk"],
+	resources:
+		mem_mb = config["seqtk"]["mem"],
+		time_limit = config["seqtk"]["time_limit"],
+	threads:
+		config["seqtk"]["threads"],
+	shell:
+		" ".join(["zcat",
+				"< {input.fastq_R1}",
+				"|",
+				"{params.seqtk}",
+				"subseq - {input.readnames}",
+				"> {output.fastq_R1}",
+				"&&",
+				"zcat",	
+				"< {input.fastq_R2}",
+				"|",
+				"{params.seqtk}",
+				"subseq - {input.readnames}",
+				"> {output.fastq_R2}",
+				])
+
+rule generate_sam:
+	"""
+	Alignment by BWA-MEM allowing multiple alignments for each read
+	"""
+	input:
+		fastq_R1 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.Extracted_R1.fastq.gz",
+								),
+		fastq_R2 = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.Extracted_R2.fastq.gz",
+								),
+		ref_fasta = config["alignment"]["hla_fasta"]
+	output:
+		sam = temp(os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.extracted.sam",
+								)),
+	log:
+		bwa_log = os.path.join("log",
+								"{sample}",
+								"{sample}_bwa.log",
+								),
+	params:
+		bwa = config["software"]["bwa"],
+	resources:
+		mem_mb = config["bwa"]["mem"],
+		time_limit = config["bwa"]["time_limit"],
+	threads:
+		config["bwa"]["threads"],
+	shell:
+		" ".join(["{params.bwa}",
+				"mem",
+				"-t {threads}",
+				"-P -L 10000",
+				"-a {input.ref_fasta}",
+				"{input.fastq_R1}",	
+				"{input.fastq_R2}",
+				"1> {output.sam}",
+				"2> {log.bwa_log}",
+				])
+
+rule get_hla_type:
+	"""
+	Estimation of HLA types by HLA-VBSeq
+	"""
+	input:
+		sam = os.path.join(config["tmp_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.extracted.sam",
+								),
+		ref_fasta = config["alignment"]["hla_fasta"]
+	output:
+		results = protected(os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.results.txt",
+								)),
+	log:
+		picard_log = os.path.join("log",
+								"{sample}",
+								"{sample}_picard.log",
+								),
+	params:
+		java = config["software"]["java1"],
+		picard = config["software"]["picard"],
+		hlavbseq = config["software"]["hlavbseq"],
+	resources:
+		mem_mb = config["picard"]["mem"],
+	shell:
+		" ".join(["{params.java}",
+				"-jar",
+				"-Xmx10g",
+				"{params.hlavbseq}",
+				"{input.ref_fasta}",
+				"{input.sam}",
+				"{output.results}",
+				"--alpha_zero 0.01",
+				"--is_paired",
+				"2> {log.picard_log}",
+				])
+
+rule get_top_five:
+	"""
+	Prediction results - top five
+	"""
+	input:
+		results = os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.results.txt",
+								),
+	output:
+		res_gene = os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.res{gene}.txt",
+								),
+		gene_top5 = os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.gene_top5{gene}.txt",
+								),
+		res_top5 = protected(os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.res_top5{gene}.txt",
+								)),
+	params:
+		parse_result = config["software"]["parse_result"],
+		allele_list = config["allele_list"]
+	shell:
+		"""
+		for {wildcards.gene} in "A" "B" "C" "DQA1" "DQB1" "DRB1" "DPB1"; do
+		{params.parse_result} {params.allele_list} {input.results} | grep '^'{wildcards.gene}'\*' | sort -k2 -n -r > {output.res_gene}
+		head -n 5 {output.res_gene} > {output.gene_top5}
+		cat {output.gene_top5} >> {output.res_top5}
+		done
+		"""
+
+rule generate_report:
+	"""
+	Prediction results - top five
+	"""
+	input:
+		results = os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.results.txt",
+								),
+	output:
+		report = protected(os.path.join(config["outs_dir"],
+								"data",
+								"{sample}",
+								"HLA-VBSeq",
+								"{sample}.report.d8.txt",
+								)),
+	params:
+		python = config["software"]["python"],
+		gen_report = config["software"]["gen_report"],
+		allele_list = config["allele_list"]
+	shell:
+		" ".join(["{params.python}",
+				"{params.gen_report}",
+				"-v {input.results}",
+				"-a {params.allele_list}",
+				"-r 151 -d 8",
+				"--ispaired",
+				"> {output.report}",
+				])

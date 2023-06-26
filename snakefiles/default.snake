@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+# coding=utf-8
+
+__author__ = "Rohan Abraham"
+__copyright__ = "Copyright (C) 2023, " + __author__
+__email__ = "rabraham@bcgsc.ca"
+__license__ = "GPLv3"
+
+include: "snakefiles/HLAVBSeq.snake"
+
+rule all_targets:
+	"""
+	Call target files as input to launch them as default targets.
+	"""
+	input:
+		expand(os.path.join(config["tmp_dir"],
+							"data",
+							"{sample}",
+							"HLA-VBSeq",
+							"{sample}.{ext}",
+							),
+				sample=samples_table_cram("{wildcards}", keys_list=True),
+				ext=["regionsHG19.txt",
+					"readsHG19.txt",
+					"unmapped.txt",
+					"hla_with_unmapped.txt",
+					"hla_with_unmapped_reads.bam",
+					"hla_with_unmapped_reads_r1.fastq.gz",
+					"hla_with_unmapped_reads_r2.fastq.gz",
+					"hg19.bam",
+					"R1.fastq.gz",
+					"R2.fastq.gz",
+					"readnames.list",
+					"Extracted_R1.fastq.gz",
+					"Extracted_R2.fastq.gz",
+					"extracted.sam",
+					]
+				),
+		expand(os.path.join(config["outs_dir"],
+							"data",
+							"{sample}",
+							"HLA-VBSeq",
+							"{sample}.results.txt",
+							),
+				sample=samples_table_cram("{wildcards}", keys_list=True),
+				),
+
+rule report_and_diagnostic:
+	input:
+		expand(os.path.join(config["outs_dir"],
+							"data",
+							"{sample}",
+							"HLA-VBSeq",
+							"{sample}.report.d8.txt",
+							),
+				sample=samples_table_cram("{wildcards}", keys_list=True),
+				),
+		expand(os.path.join(config["outs_dir"],
+							"data",
+							"{sample}",
+							"HLA-VBSeq",
+							"{sample}.{ext}{gene}.txt",
+							),
+				sample=samples_table_cram("{wildcards}", keys_list=True),
+				ext=["res",
+	 				"gene_top5",
+					"res_top5",
+					],
+				gene=["A",
+	 				"B",
+					"C",
+					"DQA1",
+					"DQB1",
+					"DRB1",
+					"DPB1",
+					]
+				),
